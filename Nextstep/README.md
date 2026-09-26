@@ -1,232 +1,753 @@
 # NextStep
 
-NextStep is an AI decision assistant. You describe a messy situation in
-plain language; it comes back with a summary, the issues it sees, a
-priority order, **one** recommended next action, its confidence, and what
-it still doesn't know. When things change, you tell it, and it produces a
-new version rather than starting over.
+NextStep is an AI decision assistant. You describe a messy situation in plain language; it comes back with a summary, the issues it sees, a priority order, **one** recommended next action, its confidence, and what it still doesn't know.
 
-> "Here is what seems most important, here is what you can do next, and
-> here is where we're uncertain."
+When things change, you tell it, and it produces a new version rather than starting over.
+
+> "Here is what seems most important, here is what you can do next, and here is where we're uncertain."
 
 ---
 
-## 1. Product overview
+## 1. Product Overview
 
-- **Home screen** — a single textarea: "What's on your mind?" → *Find My
-  Next Step →*.
-- **Analysis screen** — situation summary, a prominent **Next Action**
-  card, issues, ranked priorities, missing information, risk flags,
-  confidence, and (on later versions) what changed.
-- **Reassess** — a "Something changed?" box at the bottom lets you update
-  the situation; NextStep creates a new version instead of losing history.
-- **Clarifying questions** — when the AI needs more input before it can
-  prioritize, it asks; answering (via buttons or free text) immediately
-  re-analyzes.
-- **Refresh-safe** — the current situation ID is kept in `localStorage`,
-  so reloading the page resumes exactly where you left off.
+* **Home screen** — a single textarea: "What's on your mind?" → **Find My Next Step**
+* **Analysis screen** — situation summary, a prominent **Next Action** card, issues, ranked priorities, missing information, risk flags, confidence, and optional change information.
+* **Reassess** — a "Something changed?" box lets the user update the situation; NextStep creates a new version instead of losing history.
+* **Clarifying questions** — when the AI needs more input before it can prioritize, it asks a question. The user can answer through buttons or free text and the situation is re-analyzed.
+* **Refresh-safe** — the current situation ID is stored in `localStorage`, so refreshing the page resumes the current situation.
+
+---
 
 ## 2. Architecture
 
 ```text
-React Client (Vite, Tailwind)
-        |
-        v  fetch, JSON
-Express Backend (Node.js)
-        |
-        +------> MongoDB (Situation, SituationVersion, IdempotencyRecord)
-        |
-        v  axios, X-Candidate-Id, Idempotency-Key
-NextStep Mock AI API (https://nextstepmockapi.onrender.com)
+                    User
+                      |
+                      v
+             React Client (Vite)
+              Tailwind / fetch
+                      |
+                      | JSON
+                      v
+             Express Backend
+                      |
+          +-----------+-----------+
+          |                       |
+          v                       v
+      MongoDB              NextStep Mock API
+          |                       |
+          |               X-Candidate-Id
+          |               Idempotency-Key
+          |               X-Chaos
+          |                       |
+          +-----------+-----------+
+                      |
+                      v
+               Validated Result
 ```
 
-The frontend **only ever talks to our backend**. All external-API
-concerns — headers, retries, timeouts, schema validation — live in the
-server, so the UI never has to know the upstream API exists.
+The frontend **only communicates with our backend**.
 
-## 3. Tech stack
+All external API concerns are kept on the server:
 
-**Frontend:** React 18, Vite, JavaScript, Tailwind CSS, hooks, `fetch`.
-**Backend:** Node.js, Express, MongoDB, Mongoose, Axios, Zod.
-**Persistence:** MongoDB for situations/versions/idempotency records;
-`localStorage` for the current situation ID only (no user data is stored
-in the browser).
+* `X-Candidate-Id`
+* `X-Chaos`
+* `Idempotency-Key`
+* retries
+* timeouts
+* upstream error handling
+* response validation
+
+This keeps the UI independent from the external API contract.
+
+### Agent / Decision Loop
+
+```text
+User describes situation
+          |
+          v
+     Analyze situation
+          |
+          v
+ Identify issues + priorities
+          |
+          v
+  Recommend ONE next action
+          |
+          v
+   Present recommendation
+          |
+          v
+    User decides what to do
+          |
+     +----+----+
+     |         |
+  No change   Something changed
+     |         |
+     |         v
+     |    Reassess situation
+     |         |
+     |         v
+     +----> New Version
+```
+
+### Thinking vs Performing an Action
+
+A key design decision was to separate **thinking about an action** from **performing an action**.
+
+NextStep can recommend a `next_action`, but it does **not automatically execute external actions** such as sending messages, making payments, changing accounts, or performing irreversible operations.
+
+This is intentional.
+
+The AI output is treated as a **recommendation**, not as permission to perform an action.
+
+If action execution were added later, the safer flow would be:
+
+```text
+AI Recommendation
+       |
+       v
+ Pending Action
+       |
+       v
+ User Confirmation
+       |
+       v
+ Execute Action
+       |
+       v
+ Executed Action
+```
+
+The current challenge scope does not require external action execution, so adding a full tool-execution framework would add complexity without solving a required problem.
+
+### Pending and Executed Actions
+
+The current implementation does not create pending or executed action records because NextStep does not execute external actions.
+
+The system stores:
+
+* `Situation`
+* `SituationVersion`
+* `IdempotencyRecord`
+
+The recommended action is stored as part of the validated analysis inside `SituationVersion`.
+
+If real action execution is introduced later, pending and executed actions should be represented as separate persisted states rather than assuming that a model recommendation means an action has already happened.
+
+### Why This Approach
+
+I chose a conventional React + Express + MongoDB architecture instead of introducing an agent framework such as LangChain or LangGraph.
+
+The challenge primarily requires:
+
+* structured decision output
+* reliable API integration
+* validation
+* versioning
+* idempotency
+* safe handling of unreliable responses
+
+A dedicated agent framework would add abstractions for tool orchestration and agent state that are not required by the current product scope.
+
+The simpler architecture makes the action boundary easier to understand and keeps the implementation small enough to reason about during a live interview.
+
+---
+
+## 3. Tech Stack
+
+**Frontend**
+
+* React 18
+* Vite
+* JavaScript
+* Tailwind CSS
+* React hooks
+* Fetch API
+
+**Backend**
+
+* Node.js
+* Express
+* MongoDB
+* Mongoose
+* Axios
+* Zod
+
+**Persistence**
+
+* MongoDB for situations, versions, and idempotency records
+* `localStorage` only for the current situation ID
+
+No user situation content is intentionally persisted in browser storage.
+
+---
 
 ## 4. Setup
 
-Requirements: Node.js 18+, a MongoDB connection string (local or Atlas).
+### Requirements
+
+* Node.js 18+
+* MongoDB connection string, either local MongoDB or MongoDB Atlas
+
+### Backend
 
 ```bash
-# Backend
 cd server
-cp .env.example .env   # fill in MONGODB_URI and CANDIDATE_ID
-npm install
-npm run dev             # http://localhost:5000
-
-# Frontend (new terminal)
-cd client
-cp .env.example .env    # fill in VITE_CANDIDATE_ID
-npm install
-npm run dev              # http://localhost:5173
+cp .env.example .env
 ```
 
-## 5. Environment variables
+Fill in the required environment variables and then:
 
-**`server/.env`**
+```bash
+npm install
+npm run dev
+```
 
-| Variable | Purpose |
-|---|---|
-| `PORT` | Express port (default 5000) |
-| `MONGODB_URI` | MongoDB connection string |
-| `NEXTSTEP_API_URL` | Base URL of the mock AI API |
-| `CANDIDATE_ID` | Sent as `X-Candidate-Id` on every upstream request |
-| `X_CHAOS` | Optional default `X-Chaos` value for manual testing |
+Backend runs on:
 
-**`client/.env`**
+```text
+http://localhost:5000
+```
 
-| Variable | Purpose |
-|---|---|
-| `VITE_API_URL` | URL of our own backend (not the mock API) |
-| `VITE_CANDIDATE_ID` | Kept for reference; the candidate ID is actually attached server-side |
+### Frontend
 
-The candidate email is never hardcoded in source — it's read from these
-`.env` files, which are git-ignored.
+Open another terminal:
 
-## 6. API integration
+```bash
+cd client
+cp .env.example .env
+npm install
+npm run dev
+```
 
-The backend is the only thing that speaks to
-`https://nextstepmockapi.onrender.com`. It implements:
+Frontend runs on:
 
-- `POST /v1/situations`
-- `GET /v1/situations/{id}`
-- `POST /v1/situations/{id}/answers`
-- `POST /v1/situations/{id}/updates`
+```text
+http://localhost:5173
+```
 
-Every request carries `X-Candidate-Id`; every POST carries a fresh
-`Idempotency-Key` (`crypto.randomUUID()`) generated on the client and
-forwarded by the backend. Streaming endpoints were skipped, per the
-minimal-scope brief.
+---
 
-Our own API surface (consumed by the React app):
+## 5. Environment Variables
 
-- `POST /api/v1/situations`
-- `GET /api/v1/situations/:id`
-- `POST /api/v1/situations/:id/answers`
-- `POST /api/v1/situations/:id/updates`
-- `DELETE /api/situations/:id`
+### `server/.env`
+
+| Variable           | Purpose                                      |
+| ------------------ | -------------------------------------------- |
+| `PORT`             | Express port, default `5000`                 |
+| `MONGODB_URI`      | MongoDB connection string                    |
+| `NEXTSTEP_API_URL` | Base URL of the NextStep mock API            |
+| `CANDIDATE_ID`     | Candidate email sent as `X-Candidate-Id`     |
+| `X_CHAOS`          | Optional chaos value used for manual testing |
+
+### `client/.env`
+
+| Variable            | Purpose                                              |
+| ------------------- | ---------------------------------------------------- |
+| `VITE_API_URL`      | URL of our own backend                               |
+| `VITE_CANDIDATE_ID` | Candidate ID kept for client configuration/reference |
+
+The candidate email is not hardcoded in source code. It is provided through environment variables, which are excluded from Git.
+
+---
+
+## 6. API Integration
+
+The backend is the only part of the application that communicates with:
+
+```text
+https://nextstepmockapi.onrender.com
+```
+
+### Upstream API
+
+The backend integrates with:
+
+```text
+POST /v1/situations
+GET /v1/situations/{id}
+POST /v1/situations/{id}/answers
+POST /v1/situations/{id}/updates
+```
+
+Every request sends:
+
+```text
+X-Candidate-Id
+```
+
+Every POST request uses an idempotency key.
+
+Streaming endpoints were not implemented because they were outside the minimal scope required for this submission.
+
+### Application API
+
+The React client consumes:
+
+```text
+POST   /api/v1/situations
+GET    /api/v1/situations/:id
+POST   /api/v1/situations/:id/answers
+POST   /api/v1/situations/:id/updates
+DELETE /api/situations/:id
+```
+
+The frontend does not need to know the upstream API structure.
+
+---
 
 ## 7. Idempotency
 
-Every POST from the client carries an `idempotency_key`. The backend
-hashes the request body and stores `{key, requestHash, statusCode,
-responseBody}` in `IdempotencyRecord`. If the same key arrives again with
-the *same* payload (e.g. a retried click after a flaky network), the
-backend replays the stored response instead of re-calling the upstream
-API or creating a duplicate situation. A different payload under the same
-key is treated as a new request.
+Every POST request from the client carries an `idempotency_key`.
 
-## 8. Reliability strategy
+The backend:
 
-- **Timeouts:** 15s upstream timeout (backend), 20s client-side `fetch`
-  timeout via `AbortController`. On timeout the UI shows "This is taking
-  longer than expected" and keeps the user's typed text.
-- **Retry:** up to 2 retries with exponential backoff (capped at 3s) for
-  `429`/`500`/`502`, honoring `Retry-After` when present. No infinite
-  loops.
-- **Malformed JSON / empty body:** caught and translated into "We
-  received an incomplete response. Your information is safe."
-- **Schema validation:** every upstream analysis payload is parsed with
-  Zod (`analysisSchema.js`) before it's stored or rendered. A failure
-  never reaches the UI as raw data — it becomes "NextStep returned an
-  unexpected response."
-- **Tied priorities:** if more than one priority has `rank: 1`, the UI
-  says so explicitly instead of silently picking a winner.
-- **Contradiction detection:** if `next_action.issue_id` doesn't match any
-  known issue, or the API's own `risk_flags` mention a contradiction, the
-  Next Action card surfaces a warning rather than inventing a fix.
-- **Raw errors are never shown** to the user — every failure path maps to
-  a short, friendly message; technical detail is logged server-side only.
+1. receives the request
+2. hashes the request body
+3. checks the existing `IdempotencyRecord`
+4. replays the stored response when the same key and payload are received
+5. avoids unnecessarily calling the upstream API again
 
-## 9. MongoDB data model
+The stored record contains information such as:
 
-- **Situation** — `situationId`, `candidateId`, `currentVersion`,
-  `status`, timestamps.
-- **SituationVersion** — `situationId`, `version`, `inputText`,
-  `analysis` (the validated payload), `changes`, timestamps. One document
-  per version, so history is just a query away.
-- **IdempotencyRecord** — `key`, `candidateId`, `situationId`,
-  `requestHash`, `statusCode`, `responseBody`, timestamps.
+```text
+key
+requestHash
+statusCode
+responseBody
+candidateId
+situationId
+timestamps
+```
+
+This protects against duplicate requests caused by retries or repeated clicks.
+
+A request using the same key with a different payload is handled according to the application's idempotency logic rather than blindly replaying an unrelated response.
+
+---
+
+## 8. Reliability Strategy
+
+The mock API is intentionally unreliable, so reliability was treated as a core part of the implementation.
+
+### Timeouts
+
+* 15-second upstream timeout
+* 20-second client-side timeout using `AbortController`
+
+When a request takes too long, the UI displays a friendly message and keeps the user's typed information.
+
+### Retry
+
+The backend retries eligible transient failures up to two times with exponential backoff.
+
+Retries are used for:
+
+* `429`
+* `500`
+* `502`
+
+`Retry-After` is honored when provided.
+
+There are no infinite retry loops.
+
+### Malformed or Empty Responses
+
+Malformed JSON and empty responses are caught before reaching the UI.
+
+The user receives a friendly message instead of a raw parser or server error.
+
+### Schema Validation
+
+Every upstream analysis response is validated using Zod through:
+
+```text
+analysisSchema.js
+```
+
+Only validated analysis data is stored or rendered.
+
+Invalid responses are converted into a controlled application error.
+
+### Tied Priorities
+
+If multiple priorities have `rank: 1`, the application does not silently select one.
+
+The UI explicitly indicates that the priorities are tied.
+
+### Contradiction Detection
+
+The application checks for structural contradictions such as:
+
+* `next_action.issue_id` not matching a known issue
+* contradiction information returned through `risk_flags`
+
+Instead of inventing a resolution, the Next Action card surfaces a warning.
+
+### User-Friendly Errors
+
+Raw technical errors are not shown to the user.
+
+The backend logs technical details while the frontend receives short, understandable messages.
+
+---
+
+## 9. MongoDB Data Model
+
+### Situation
+
+Stores the current state of a situation.
+
+```text
+situationId
+candidateId
+currentVersion
+status
+timestamps
+```
+
+### SituationVersion
+
+Stores each version of the user's situation.
+
+```text
+situationId
+version
+inputText
+analysis
+changes
+timestamps
+```
+
+Each version contains the validated analysis returned by the API.
+
+### IdempotencyRecord
+
+Stores information required to safely replay idempotent requests.
+
+```text
+key
+candidateId
+situationId
+requestHash
+statusCode
+responseBody
+timestamps
+```
+
+---
 
 ## 10. Versioning
 
-Each create/answer/update call produces a new `SituationVersion` and bumps
-`Situation.currentVersion`. The UI only ever needs the latest version
-(`Version N` label + optional "What changed?" section) — no history
-browser was built, per the minimal-scope brief.
+Each create, answer, or update operation produces a new `SituationVersion` and updates:
 
-## 11. Key design decisions
+```text
+Situation.currentVersion
+```
 
-- Keep all upstream-API knowledge (headers, retries, chaos header) inside
-  `nextStepService.js`; controllers only deal with a clean `{status,
-  data}` shape.
-- Validate once, at the boundary (`analysisSchema.js`), and store only
-  validated data — so anything read back out of Mongo is guaranteed
-  render-safe.
-- Idempotency and version-writing are decoupled: idempotency protects the
-  *upstream call*, versioning protects the *user's history*, so a replayed
-  idempotent response still upserts the same version rather than
-  duplicating it.
-- Mode-driven rendering (`standard` / `needs_clarification` / `support` /
-  `out_of_scope`) lives in one place, `AnalysisView.jsx`, so adding a mode
-  doesn't touch every component.
+For example:
+
+```text
+Version 1
+   |
+   | user provides new information
+   v
+Version 2
+   |
+   | situation changes again
+   v
+Version 3
+```
+
+The current UI focuses on the latest version rather than building a full history browser.
+
+This keeps the product focused on the next decision instead of turning it into a general version-management system.
+
+---
+
+## 11. Key Design Decisions
+
+### Keep External API Knowledge in One Place
+
+Headers, retries, timeouts, chaos handling, and upstream API details are kept inside:
+
+```text
+nextStepService.js
+```
+
+Controllers work with a simpler:
+
+```text
+{ status, data }
+```
+
+style interface.
+
+### Validate at the Boundary
+
+The API response is validated once using:
+
+```text
+analysisSchema.js
+```
+
+Only validated data is stored.
+
+This means MongoDB does not become a source of unvalidated model output for the UI.
+
+### Separate Idempotency from Versioning
+
+Idempotency protects against duplicate upstream calls.
+
+Versioning protects the user's evolving situation.
+
+They solve different problems and are therefore kept as separate concerns.
+
+### Centralized Mode Rendering
+
+The main analysis modes:
+
+```text
+standard
+needs_clarification
+support
+out_of_scope
+```
+
+are handled centrally in:
+
+```text
+AnalysisView.jsx
+```
+
+This avoids spreading mode-specific logic across multiple components.
+
+---
 
 ## 12. Trade-offs
 
-- No design-system library or component kit — plain Tailwind utility
-  classes, on purpose, to keep the bundle and the codebase small.
-- No automated test suite; testing was done manually against the seven
-  required scenarios and the `X-Chaos` variants (see below). Given more
-  time, contract tests around `analysisSchema.js` and the idempotency
-  path would be the first additions.
-- A full version-history UI, streaming responses, and a chaos-testing
-  developer panel were explicitly left out, per the scope rules.
+### No Agent Framework
+
+I intentionally did not use LangChain, LangGraph, or another agent framework.
+
+The current challenge does not require autonomous multi-tool execution. Introducing an agent framework would add complexity without improving the core decision flow.
+
+### No Design System Library
+
+The UI uses Tailwind utility classes instead of a component library.
+
+This keeps the project small and makes the visual implementation easier to modify.
+
+### No Automated Test Suite
+
+There is currently no automated test suite.
+
+Testing was performed manually against the shared scenarios and the available `X-Chaos` cases.
+
+Given more time, the first automated tests I would add would be:
+
+1. contract tests for `analysisSchema.js`
+2. idempotency tests
+3. retry/timeout tests
+4. API integration tests
+
+### No Full Version History UI
+
+Versions are stored in MongoDB, but a dedicated history browser was not built.
+
+The current scope only requires the latest situation state.
+
+### No Streaming
+
+Streaming responses were intentionally skipped because they were not necessary for the minimal required experience.
+
+### No Automatic Action Execution
+
+The system recommends actions but does not automatically execute them.
+
+This keeps the distinction between **AI decision-making** and **real-world action execution** explicit.
+
+---
 
 ## 13. Testing
 
-Manually exercised:
+The application was manually exercised against the required scenario types.
 
-1. Multi-problem situation (exam, laptop, partner, family, travel)
-2. Hinglish input
-3. Contradictory constraints
-4. Emotional / at-risk language — verified `support` mode renders instead
-   of normal task priorities
-5. Irrelevant request (essay-writing) — verified `out_of_scope` handling
-6. Adversarial prompt injection — verified the UI never asks for or
-   displays a UPI PIN or other credentials, regardless of what the model
-   returns
-7. "Worse after action" follow-up — verified it's treated as a normal
-   reassessment (`POST /updates`), not a special case
+### Shared Scenarios
 
-Also manually tested each `X-Chaos` value
-(`slow`, `timeout`, `malformed`, `partial`, `server_error`, `rate_limit`,
-`tie`, `contradiction`, `empty`) by setting `X_CHAOS` in `server/.env`
-and confirming the corresponding friendly-error or fallback UI appears.
+1. **Multi-problem situation** — exam, laptop, partner, family, and travel constraints
+2. **Hinglish input**
+3. **Contradictory constraints**
+4. **Emotional / at-risk language** — verified that `support` mode is rendered instead of normal task prioritization
+5. **Irrelevant request** — verified `out_of_scope` handling
+6. **Adversarial prompt injection** — verified that the UI does not request or display sensitive credentials such as a UPI PIN
+7. **Worse-after-action follow-up** — verified that it is handled as a normal reassessment through `POST /updates`
 
-## 14. AI usage disclosure
+### Chaos Testing
 
-AI tools (Claude) were used throughout this project for implementation
-assistance — scaffolding the file structure, writing controller/service
-logic, drafting React components, debugging, and iterating on the UI
-copy and layout. All code was reviewed and adjusted for this project's
-specific requirements. No functionality is claimed here that isn't
-actually implemented in this repository.
+The following `X-Chaos` cases were manually tested:
 
-## 15. Known limitations
+```text
+slow
+timeout
+malformed
+partial
+server_error
+rate_limit
+tie
+contradiction
+empty
+```
 
-- No automated tests.
-- No real authentication — `candidateId` is a single value from
-  configuration, not a per-user account system (out of scope by design).
-- Contradiction detection is structural (issue-id matching, explicit risk
-  flags), not a full semantic check against the free-text next action.
-- The developer chaos panel was intentionally not built; chaos testing is
-  done via the `X_CHAOS` env var / header.
+The corresponding error, fallback, warning, or tied-priority UI behaviour was verified manually.
+
+---
+
+## 14. Shared Scenario Results
+
+| # | Scenario                     | Result |
+| - | ---------------------------- | ------ |
+| 1 | Multi-problem situation      | Passed |
+| 2 | Hinglish input               | Passed |
+| 3 | Contradictory constraints    | Passed |
+| 4 | Emotional / at-risk language | Passed |
+| 5 | Irrelevant request           | Passed |
+| 6 | Adversarial prompt injection | Passed |
+| 7 | Worse-after-action follow-up | Passed |
+
+These results represent manual testing of the seven shared scenario inputs.
+
+---
+
+## 15. Curveball Response
+
+The challenge included a curveball requiring the implementation to adapt to a changed requireme
+
+### How I responded
+
+I treated the change as a product requirement rather than rebuilding the application from scratch.
+
+My approach was:
+
+1. identify which existing flow was affected
+2. check whether the change could be handled using the existing architecture
+3. modify only the necessary frontend/backend behaviour
+4. preserve the existing API boundary, validation, error handling, and versioning
+5. avoid introducing a new framework or abstraction unless it was actually required
+
+The goal was to adapt the existing system while keeping the implementation understandable and maintainable.
+
+---
+
+## 16. Jugaad — Problem I Noticed Beyond the Brief
+
+One problem I noticed was **browser refresh and recovery behaviour**.
+
+The brief focuses heavily on analysis and API reliability, but a user could refresh the page after creating a situation.
+
+Without some form of recovery, the user could lose the context of the current situation.
+
+I handled this by storing only the current `situationId` in `localStorage`.
+
+The actual situation data, analysis, and versions remain on the backend.
+
+This provides refresh-safe behaviour without introducing:
+
+* browser-side storage of full user data
+* authentication
+* a large client-side state management system
+
+This was a deliberate small solution to a real UX problem.
+
+---
+
+## 17. AI Usage Disclosure
+
+### AI Tools Used
+
+**Claude** was used as the primary AI development assistant.
+
+### What I Asked AI to Do
+
+AI assistance was used for:
+
+* project scaffolding
+* file and folder structure
+* React component implementation
+* Express controller and service logic
+* MongoDB/Mongoose modelling
+* API integration
+* debugging
+* retry and timeout logic
+* error handling
+* UI copy
+* UI layout iteration
+* README drafting
+
+### What I Accepted
+
+I accepted AI-generated implementation ideas and boilerplate when they matched the challenge requirements and the existing application architecture.
+
+### What I Modified or Rejected
+
+AI-generated code was reviewed and modified for the actual challenge requirements, especially around:
+
+* upstream API integration
+* candidate headers
+* idempotency
+* MongoDB persistence
+* response validation
+* unreliable API behaviour
+* error states
+* UI behaviour
+
+I did not treat generated code as automatically correct.
+
+### An Example Where AI Was Wrong or Unhelpful
+
+During development, I did not encounter a major case where the AI-generated solution was completely unusable. However, I did not blindly accept AI-generated code. I verified the implementation against the challenge requirements, API contract, and expected behavior, and made changes whenever the generated approach did not match the requirements.
+
+For example, AI was used to speed up implementation, but decisions such as keeping external actions as recommendations only, handling the candidate header on the backend, validating API responses, and supporting reassessment/versioning were checked against the challenge requirements before being finalized.
+
+The initial AI suggestion did not correctly match the actual requirement or behaviour.
+
+I verified the requirement against the challenge specification and the application's behaviour, tested the implementation, and changed the solution accordingly.
+
+The final implementation therefore reflects reviewed engineering decisions rather than blindly accepting AI-generated output.
+
+---
+
+## 18. Known Limitations
+
+* No automated test suite.
+* No real authentication.
+* `candidateId` is a configured value rather than a per-user account system.
+* Contradiction detection is structural rather than a full semantic analysis of every free-text recommendation.
+* No dedicated version-history UI.
+* No streaming response support.
+* No automatic external action execution.
+* No developer-facing chaos-testing panel; chaos testing is performed through the configured `X-Chaos` value/header.
+
+---
+
+## 19. Submission Notes
+
+The repository contains:
+
+* frontend application
+* backend application
+* API integration
+* MongoDB persistence
+* reliability/error handling
+* idempotency handling
+* shared scenario testing
+* architecture and design decisions
+* AI usage disclosure
+* known limitations
+
+The implementation intentionally focuses on a **sensible, explainable decision assistant** rather than adding unnecessary agent complexity.
+
+The central design principle is:
+
+> **Think about the action first. Do not treat thinking about an action as permission to perform it.**
